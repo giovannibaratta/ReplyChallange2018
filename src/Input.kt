@@ -88,7 +88,7 @@ object Input{
          */
 
 
-        val inputFile = FileReader("inputFile")
+        val inputFile = FileReader("inputFile2")
         val input = InputReader(BufferedReader(inputFile))
 
         val (numberOfProviders, numberOfServices, numberOfCountries, numberOfProjects) = input.read4<Int,Int,Int,Int>(" ")

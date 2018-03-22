@@ -1,12 +1,13 @@
 import util.ASearch
 import kotlin.collections.HashMap
+import kotlin.concurrent.thread
 import kotlin.math.max
 import kotlin.math.min
 
 //region oggetto soluzione, DA MODIFICARE IN BASE AL PROBLEMA
 class Solution(val input: InputData) {
 
-    data class State(val NeededServicesQuantity: Array<Int>,
+    data class State(val neededServicesQuantity: Array<Int>,
                      // key : (providerIndex,regionIndex) value : quanity
                      val usedProviders: HashMap<Pair<Int,Int>,Int>,
                      val servicesCost: Double,
@@ -24,17 +25,24 @@ class Solution(val input: InputData) {
         val printer = StringBuilder()
 
         // key : (providerIndex,regionIndex) value : quanity
-        val availableServicesQuantity = HashMap<Pair<Int, Int>, Int>()
+        val availableUnitsFromProviderRegion = HashMap<Pair<Int, Int>, Int>()
 
         // popolo la lista iniziale
         for (providerIndex in input.providerRegion.indices)
             for (regionIndex in input.providerRegion[providerIndex].indices)
-                availableServicesQuantity
+                availableUnitsFromProviderRegion
                         .put( Pair(providerIndex, regionIndex),
                               input.providerRegion[providerIndex][regionIndex].availableUnit)
 
-        println("Numero di provider X regione = ${availableServicesQuantity.size}")
-        var searchedProjects = 1
+        println("Numero di provider X regione = ${availableUnitsFromProviderRegion.size}")
+
+        val availableService = Array(input.numberOfServices, {0L})
+
+        for(key in availableUnitsFromProviderRegion.keys)
+            for(i in 0 until availableService.size)
+                availableService.set(i, availableService[i] + input.providerRegion[key.first][key.second].packetComposition[i] * availableUnitsFromProviderRegion.get(key)!!)
+
+        var searchedProjects = 0
 
         // ordina i progetti
         val sortedProject = sort()
@@ -47,33 +55,69 @@ class Solution(val input: InputData) {
             var res: ASearch.Node<State>? = null
             try {
                 val startState = State(Array(input.numberOfServices, { prj.units[it] }), HashMap(), 0.0, 0.0, 0.0, 0.0)
-
+                val startTime = System.nanoTime()
                 res = ASearch.search<State>(startState,
                         stateCost = { 1/it.score },
-                        isGoal = { it.NeededServicesQuantity.sum() == 0
-                            // possibile miglioramento, contorllo se non ci sono più abbastanza pezzi
+                        isGoal = {
+                            if((System.nanoTime() - startTime)/1000000 > 300) {
+                                println("Timeout ${searchedProjects}")
+                                return@search true
+                            }
+
+                            val mapped = availableService.mapIndexed {
+                                index, aQ -> aQ - (it.usedProviders.map {
+                                val packet = input.providerRegion[it.key.first][it.key.second].packetComposition[index]
+                                val quantity = it.value
+                                packet * it.value
+                                }.sum())
+                            }
+
+                            val filtered = mapped.filterIndexed { index, value -> it.neededServicesQuantity[index] > 0 && value - it.neededServicesQuantity[index] > 0 }
+
+                            it.neededServicesQuantity.sum() == 0
+                            || !filtered.any()/*!availableService.mapIndexed {
+                                index, aQ -> aQ - it.usedProviders.map {
+                                                input.providerRegion[it.key.first][it.key.second].packetComposition[index] * it.value
+                                                }.sum()
+                                    }.filterIndexed { index, value -> value - it.neededServicesQuantity[index] > 0 }.any()*/
+                            // possibile miglioramento, controllo se non ci sono più abbastanza pezzi
                         },
                         heuristic = {
-                            //println("q : ${it.NeededServicesQuantity.sum()} s : ${10000/it.score}")
-                            it.NeededServicesQuantity.sum()/1.0 + 10000/it.score },
+                            val invScore = 1/it.score
+                            val pesoNeeded = when{
+                                invScore > 1000 -> 10000.0
+                                invScore > 100 -> 1000.0
+                                invScore > 10 -> 100.0
+                                invScore > 1 -> 10.0
+                                invScore > 0.1 -> 1.0
+                                invScore > 0.01 -> 0.1
+                                invScore > 0.001 -> 0.01
+                                invScore > 0.0001 -> 0.001
+                                invScore > 0.00001 -> 0.0001
+                                else -> 1.0
+                            }
+                            val pesoScore = 0//0.0001
+                            //if(searchedProjects == 3690)
+                            //    println("w : ${pesoNeeded} s : ${1/it.score} q : ${pesoNeeded * it.neededServicesQuantity.sum()} s : ${pesoScore/it.score}")
+                            pesoNeeded * it.neededServicesQuantity.sum() + pesoScore/it.score },
                         nextState = {
-                            //println("s : ${it.score} , need : ${it.NeededServicesQuantity.sum()}, prov : ${it.usedProviders}")
+                            //println("s : ${it.score} , need : ${it.neededServicesQuantity.sum()}, prov : ${it.usedProviders}")
                             val listaNext = mutableListOf<State>()
                             val state = it
 
-                            for (providerRegionPair in availableServicesQuantity.keys.filterNot { state.usedProviders.containsKey(it) }) {
+                            for (providerRegionPair in availableUnitsFromProviderRegion.keys.filterNot { state.usedProviders.containsKey(it) }) {
                                 // providerRegion ancora non utilizzato
-                                val quantity = howMuchICanBuy(prj, state.NeededServicesQuantity, providerRegionPair, availableServicesQuantity)
+                                val quantity = howMuchICanBuy(prj, state.neededServicesQuantity, providerRegionPair, availableUnitsFromProviderRegion)
                                 if(quantity <= 0)
                                     continue // niente da comprare
 
-                                assert(quantity <= availableServicesQuantity.get(providerRegionPair)!!, {"Sto comprando più del dovuto"})
+                                assert(quantity <= availableUnitsFromProviderRegion.get(providerRegionPair)!!, {"Sto comprando più del dovuto"})
                                 val newUsedService = HashMap<Pair<Int,Int>,Int>()
                                 newUsedService.putAll(state.usedProviders)
                                 newUsedService.put(providerRegionPair, quantity)
 
                                 val newNeededServiceQuantity : Array<Int> =
-                                        state.NeededServicesQuantity
+                                        state.neededServicesQuantity
                                                 .mapIndexed{ index, value->
                                                     max(0,value-(input.providerRegion[providerRegionPair.first][providerRegionPair.second].packetComposition[index]*quantity))}
                                                 .toTypedArray()
@@ -88,7 +132,6 @@ class Solution(val input: InputData) {
                         }
                 )
 
-
                 // Costruzione della linea di output
                 val outputString = StringBuilder()
                 res.state.usedProviders.forEach { outputString.append("${it.key.first} ${it.key.second} ${it.value} ") }
@@ -96,15 +139,32 @@ class Solution(val input: InputData) {
                 projectResult.put(prj.prjID, outputString.toString())
 
                 // Aggiorna le unità di pacchetti rimanenti
-                res.state.usedProviders.forEach { availableServicesQuantity.put(it.key, availableServicesQuantity.get(it.key)!! - it.value) }
-                // assertion
-                availableServicesQuantity.forEach { assert(it.component2() >= 0, { "Una delle componenti rimanenti è < 0" }) }
+                res.state.usedProviders.forEach {
+                    val newValue = availableUnitsFromProviderRegion.get(it.key)!! - it.value
+                    if (newValue > 0)
+                        availableUnitsFromProviderRegion.put(it.key, newValue)
+                    else
+                        availableUnitsFromProviderRegion.remove(it.key)
 
-                println("Fine progetto ${searchedProjects++}")
+                    for(i in availableService.indices){
+                        availableService.set(i, availableService[i] -
+                            input.providerRegion[it.key.first][it.key.second].packetComposition[i] * it.value)
+                    }
+                }
+
+
+                availableService.forEach { assert(it >= 0, {"Uno dei servizi è negativo"}) }
+                // assertion
+                availableUnitsFromProviderRegion.forEach { assert(it.component2() >= 0, { "Una delle componenti rimanenti è < 0" }) }
+
+                if(searchedProjects % 10 == 0)
+                    println("Fine progetto ${searchedProjects} ${availableUnitsFromProviderRegion.size}")
             } catch (e: ASearch.NoSolutionException) {
                 // Non c'è soluzione, stampo una stringa vuota
                 projectResult.put(prj.prjID, "\n")
-                println("Fine Progetto ${searchedProjects++} con fallimento")
+                println("Fine Progetto ${searchedProjects} con fallimento ${availableUnitsFromProviderRegion.size}")
+            }finally {
+                searchedProjects++
             }
 
         }
